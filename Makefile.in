@@ -2,15 +2,15 @@
 
 HAVE_MYSQL=@HAVE_MYSQL@
 ifeq ($(HAVE_MYSQL),yes)
-	ALL_DEPENDS=mt19937ar common common_sql login login_sql char char_sql map map_sql tools converters import save
-	SQL_DEPENDS=mt19937ar common_sql login_sql char_sql map_sql import save
-	COMMON_SQL_DEPENDS=mt19937ar
-	LOGIN_SQL_DEPENDS=mt19937ar common_sql
-	CHAR_SQL_DEPENDS=mt19937ar common_sql
-	MAP_SQL_DEPENDS=mt19937ar common_sql
+	ALL_DEPENDS=mt19937ar libconfig common common_sql login login_sql char char_sql map map_sql tools converters import save
+	SQL_DEPENDS=mt19937ar libconfig common_sql login_sql char_sql map_sql import save
+	COMMON_SQL_DEPENDS=mt19937ar libconfig
+	LOGIN_SQL_DEPENDS=mt19937ar libconfig common_sql
+	CHAR_SQL_DEPENDS=mt19937ar libconfig common_sql
+	MAP_SQL_DEPENDS=mt19937ar libconfig common_sql
 	CONVERTERS_DEPENDS=common_sql
 else
-	ALL_DEPENDS=mt19937ar common login char map tools import save
+	ALL_DEPENDS=mt19937ar libconfig common login char map tools import save
 	SQL_DEPENDS=needs_mysql
 	COMMON_SQL_DEPENDS=needs_mysql
 	LOGIN_SQL_DEPENDS=needs_mysql
@@ -18,10 +18,10 @@ else
 	MAP_SQL_DEPENDS=needs_mysql
 	CONVERTERS_DEPENDS=needs_mysql
 endif
-COMMON_TXT_DEPENDS=mt19937ar
-LOGIN_TXT_DEPENDS=mt19937ar common
-CHAR_TXT_DEPENDS=mt19937ar common
-MAP_TXT_DEPENDS=mt19937ar common
+COMMON_TXT_DEPENDS=mt19937ar libconfig
+LOGIN_TXT_DEPENDS=mt19937ar libconfig common
+CHAR_TXT_DEPENDS=mt19937ar libconfig common
+MAP_TXT_DEPENDS=mt19937ar libconfig common
 
 WITH_PLUGINS=@WITH_PLUGINS@
 ifeq ($(WITH_PLUGINS),yes)
@@ -35,6 +35,7 @@ endif
 .PHONY: txt sql conf \
 	common common_sql \
 	mt19937ar \
+	libconfig \
 	login login_sql \
 	char char_sql \
 	map map_sql \
@@ -57,6 +58,9 @@ common_sql: $(COMMON_SQL_DEPENDS)
 
 mt19937ar:
 	@$(MAKE) -C 3rdparty/mt19937ar
+	
+libconfig:
+	@$(MAKE) -C 3rdparty/libconfig
 
 login: $(LOGIN_TXT_DEPENDS)
 	@$(MAKE) -C src/login txt
@@ -106,6 +110,7 @@ save:
 clean:
 	@$(MAKE) -C src/common $@
 	@$(MAKE) -C 3rdparty/mt19937ar $@
+	@$(MAKE) -C 3rdparty/libconfig $@
 	@$(MAKE) -C src/login $@
 	@$(MAKE) -C src/char $@
 	@$(MAKE) -C src/char_sql $@
@@ -120,6 +125,7 @@ distclean: clean
 	@rm -rf src/tool/Makefile src/plugins/Makefile src/txt-converter/Makefile
 	@rm -rf src/login/Makefile src/char/Makefile src/char_sql/Makefile src/map/Makefile
 	@rm -rf 3rdparty/mt19937ar/Makefile
+	@rm -rf 3rdparty/libconfig/Makefile
 	@rm -rf src/common/Makefile Makefile
 
 help:
@@ -128,6 +134,7 @@ help:
 	@echo "'common'      - builds object files used in TXT servers"
 	@echo "'common_sql'  - builds object files used in SQL servers"
 	@echo "'mt19937ar'   - builds object file of Mersenne Twister MT19937"
+	@echo "'libconfig'   - builds object file of Configuration File Library"
 	@echo "'login'       - builds login server (TXT version)"
 	@echo "'login_sql'   - builds login server (SQL version)"
 	@echo "'char'        - builds char server (TXT version)"

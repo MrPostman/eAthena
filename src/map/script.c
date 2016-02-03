@@ -15417,6 +15417,34 @@ BUILDIN_FUNC(showdigit)
 	return 0;
 }
 
+/**
+* packageitem(container_item_id)
+* when no item id is provided it tries to assume it comes from the current item id being processed (if any)
+**/
+BUILDIN_FUNC(packageitem) {
+	struct map_session_data *sd = NULL;
+	struct item_data *data = NULL;
+	int nameid = script_getnum(st, 2);
+
+	if (!(data = itemdb_exists(nameid))) {
+		ShowWarning("buildin_packageitem: unknown item id %d\n", nameid);
+		script_pushint(st, 1);
+	}
+	else if (!data->package) {
+		ShowWarning("buildin_packageitem: item '%s' (%d) isn't a package!\n", data->name, nameid);
+		script_pushint(st, 1);
+	}
+	else if (!(sd = script_rid2sd(st))) {
+		ShowWarning("buildin_packageitem: no player attached!! (item %s (%d))\n", data->name, nameid);
+		script_pushint(st, 1);
+	}
+	else {
+		itemdb_package_item(sd, data->package);
+		script_pushint(st, 0);
+	}
+
+	return 0;
+}
 
 // declarations that were supposed to be exported from npc_chat.c
 #ifdef PCRE_SUPPORT
@@ -15834,5 +15862,8 @@ struct script_function buildin_func[] = {
 	BUILDIN_DEF(checkquest, "i?"),
 	BUILDIN_DEF(changequest, "ii"),
 	BUILDIN_DEF(showevent, "ii"),
+
+	BUILDIN_DEF(packageitem, "i"),
+
 	{NULL,NULL,NULL},
 };

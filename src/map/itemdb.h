@@ -85,11 +85,46 @@ struct item_data {
 		unsigned buyingstore : 1;
 	} flag;
 	short gm_lv_trade_override;	//GM-level to override trade_restriction
+
+	struct item_package *package;
 };
 
 struct item_group {
 	int nameid[MAX_RANDITEM];
 	int qty; //Counts amount of items in the group.
+};
+
+struct item_package_rand_entry {
+	unsigned short id;
+	unsigned short qty;
+	unsigned short rate;
+	unsigned short hours;
+	unsigned int announce : 1;
+	unsigned int named : 1;
+	unsigned int force_serial : 1;
+	struct item_package_rand_entry *next;
+};
+
+struct item_package_must_entry {
+	unsigned short id;
+	unsigned short qty;
+	unsigned short hours;
+	unsigned int announce : 1;
+	unsigned int named : 1;
+	unsigned int force_serial : 1;
+};
+
+struct item_package_rand_group {
+	struct item_package_rand_entry *random_list;
+	unsigned short random_qty;
+};
+
+struct item_package {
+	unsigned short id;
+	struct item_package_rand_group *random_groups;
+	struct item_package_must_entry *must_items;
+	unsigned short random_qty;
+	unsigned short must_qty;
 };
 
 struct item_data* itemdb_searchname(const char *name);
@@ -145,6 +180,7 @@ int itemdb_isstackable(int);
 int itemdb_isstackable2(struct item_data *);
 
 void itemdb_reload(void);
+void itemdb_package_item(struct map_session_data *sd, struct item_package *package);
 
 void do_final_itemdb(void);
 int do_init_itemdb(void);
