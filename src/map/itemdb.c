@@ -5,6 +5,8 @@
 #include "../common/malloc.h"
 #include "../common/showmsg.h"
 #include "../common/strlib.h"
+#include "../common/random.h"
+#include "../common/conf.h"
 #include "itemdb.h"
 #include "map.h"
 #include "battle.h" // struct battle_config
@@ -26,6 +28,10 @@ static DBMap*            itemdb_other;// int nameid -> struct item_data*
 static struct item_group itemgroup_db[MAX_ITEMGROUP];
 
 struct item_data dummy_item; //This is the default dummy item used for non-existant items. [Skotlex]
+
+
+struct item_package *itemdb_packages;
+unsigned short itemdb_package_count;
 
 /*==========================================
  * ñºëOÇ≈åüçıóp
@@ -989,6 +995,318 @@ static int itemdb_read_sqldb(void)
 }
 #endif /* not TXT_ONLY */
 
+/* [Ind/Hercules] */
+void itemdb_package_item(struct map_session_data *sd, struct item_package *package) {
+	int i = 0, get_count, j, flag;
+
+	nullpo_retv(sd);
+	nullpo_retv(package);
+
+	for (i = 0; i < package->must_qty; i++) {
+		struct item it;
+		memset(&it, 0, sizeof(it));
+
+		it.nameid = package->must_items[i].id;
+		it.identify = 1;
+
+		if (package->must_items[i].hours) {
+			it.expire_time = (unsigned int)(time(NULL) + ((package->must_items[i].hours * 60) * 60));
+		}
+
+		if (package->must_items[i].named) {
+			it.card[0] = CARD0_FORGE;
+			it.card[1] = 0;
+			it.card[2] = GetWord(sd->status.char_id, 0);
+			it.card[3] = GetWord(sd->status.char_id, 1);
+		}
+
+		if (package->must_items[i].announce)
+			;//clif_package_announce(sd, package->must_items[i].id, package->id);
+
+		get_count = itemdb_isstackable(package->must_items[i].id) ? package->must_items[i].qty : 1;
+		it.amount = get_count == 1 ? 1 : get_count;
+
+		for (j = 0; j < package->must_items[i].qty; j += get_count) {
+			if ((flag = pc_additem(sd, &it, get_count)))
+				clif_additem(sd, 0, 0, flag);
+		}
+	}
+
+
+	if (package->random_qty) {
+		for (i = 0; i < package->random_qty; i++) {
+			struct item_package_rand_entry *entry;
+
+			entry = &package->random_groups[i].random_list[rnd() % package->random_groups[i].random_qty];
+
+			while (1) {
+				if (rnd() % 10000 >= entry->rate) {
+					entry = entry->next;
+					continue;
+				}
+				else {
+					struct item it;
+					memset(&it, 0, sizeof(it));
+
+					it.nameid = entry->id;
+					it.identify = 1;
+
+					if (entry->hours) {
+						it.expire_time = (unsigned int)(time(NULL) + ((entry->hours * 60) * 60));
+					}
+
+					if (entry->named) {
+						it.card[0] = CARD0_FORGE;
+						it.card[1] = 0;
+						it.card[2] = GetWord(sd->status.char_id, 0);
+						it.card[3] = GetWord(sd->status.char_id, 1);
+					}
+
+					if (entry->announce)
+						;// clif_package_announce(sd, entry->id, package->id);
+
+					get_count = itemdb_isstackable(entry->id) ? entry->qty : 1;
+
+					it.amount = get_count == 1 ? 1 : get_count;
+
+					for (j = 0; j < entry->qty; j += get_count) {
+						if ((flag = pc_additem(sd, &it, get_count)))
+							clif_additem(sd, 0, 0, flag);
+					}
+					break;
+				}
+			}
+		}
+	}
+}
+
+/*======================================
+* [Ind/Hercules]
+*======================================*/
+static void itemdb_read_packages(void) {
+	const char *config_filename = "db/item_packages.conf";
+	config_t item_packages_conf;
+	config_setting_t *itg = NULL, *it = NULL, *t = NULL;
+	unsigned int *must = NULL, *random = NULL, *rgroup = NULL, **rgroups = NULL;
+	const char *itname;
+	struct item_package_rand_entry **prev = NULL;
+	int i = 0, c = 0, count = 0, highest_gcount = 0;
+
+	if (config_load(&item_packages_conf, config_filename)) {
+		ShowError("can't read %s\n", config_filename);
+		return;
+	}
+
+	must = aMalloc(config_setting_length(item_packages_conf.root) * sizeof(unsigned int));
+	random = aMalloc(config_setting_length(item_packages_conf.root) * sizeof(unsigned int));
+	rgroup = aMalloc(config_setting_length(item_packages_conf.root) * sizeof(unsigned int));
+	rgroups = aMalloc(config_setting_length(item_packages_conf.root) * sizeof(unsigned int *));
+
+	for (i = 0; i < config_setting_length(item_packages_conf.root); i++) {
+		must[i] = 0;
+		random[i] = 0;
+		rgroup[i] = 0;
+		rgroups[i] = NULL;
+	}
+
+	/* validate tree, drop poisonous fruits! */
+	i = 0;
+	while ((itg = config_setting_get_elem(item_packages_conf.root, i++))) {
+		const char *name = config_setting_name(itg);
+
+		if (!itemdb_searchname(name)) {
+			ShowWarning("itemdb_read_packages: unknown package item '%s', skipping..\n", name);
+			config_setting_remove(item_packages_conf.root, name);
+			--i;
+			continue;
+		}
+
+		c = 0;
+		while ((it = config_setting_get_elem(itg, c++))) {
+			int rval = 0;
+
+			if (!(t = config_setting_get_member(it, "Random")) || (rval = config_setting_get_int(t)) < 0) {
+				ShowWarning("itemdb_read_packages: invalid 'Random' value (%d) for item '%s' in package '%s', defaulting to must!\n", rval, config_setting_name(it), name);
+				config_setting_remove(it, config_setting_name(it));
+				--c;
+				continue;
+			}
+
+			if (rval == 0)
+				must[i - 1] += 1;
+			else {
+				random[i - 1] += 1;
+				if (rval > rgroup[i - 1])
+					rgroup[i - 1] = rval;
+				if (rval > highest_gcount)
+					highest_gcount = rval;
+			}
+		}
+	}
+
+	CREATE(prev, struct item_package_rand_entry *, highest_gcount);
+	for (i = 0; i < highest_gcount; i++) {
+		prev[i] = NULL;
+	}
+
+	for (i = 0; i < config_setting_length(item_packages_conf.root); i++) {
+		rgroups[i] = aMalloc(rgroup[i] * sizeof(unsigned int));
+		for (c = 0; c < rgroup[i]; c++) {
+			rgroups[i][c] = 0;
+		}
+	}
+
+	/* grab the known sizes */
+	i = 0;
+	while ((itg = config_setting_get_elem(item_packages_conf.root, i++))) {
+		c = 0;
+		while ((it = config_setting_get_elem(itg, c++))) {
+			int rval = 0;
+			if ((t = config_setting_get_member(it, "Random")) != NULL && (rval = config_setting_get_int(t)) > 0) {
+				rgroups[i - 1][rval - 1] += 1;
+			}
+		}
+	}
+
+	CREATE(itemdb_packages, struct item_package, config_setting_length(item_packages_conf.root));
+	itemdb_package_count = (unsigned short)config_setting_length(item_packages_conf.root);
+
+	/* write */
+	i = 0;
+	while ((itg = config_setting_get_elem(item_packages_conf.root, i++))) {
+		struct item_data *data = itemdb_searchname(config_setting_name(itg));
+		int r = 0, m = 0;
+
+		for (r = 0; r < highest_gcount; r++) {
+			prev[r] = NULL;
+		}
+
+		data->package = &itemdb_packages[count];
+
+		itemdb_packages[count].id = data->nameid;
+		itemdb_packages[count].random_groups = NULL;
+		itemdb_packages[count].must_items = NULL;
+		itemdb_packages[count].random_qty = rgroup[i - 1];
+		itemdb_packages[count].must_qty = must[i - 1];
+
+		if (itemdb_packages[count].random_qty) {
+			CREATE(itemdb_packages[count].random_groups, struct item_package_rand_group, itemdb_packages[count].random_qty);
+			for (c = 0; c < itemdb_packages[count].random_qty; c++) {
+				if (!rgroups[i - 1][c])
+					ShowError("itemdb_read_packages: package '%s' missing 'Random' field %d! there must not be gaps!\n", config_setting_name(itg), c + 1);
+				else
+					CREATE(itemdb_packages[count].random_groups[c].random_list, struct item_package_rand_entry, rgroups[i - 1][c]);
+				itemdb_packages[count].random_groups[c].random_qty = 0;
+			}
+		}
+
+		if (itemdb_packages[count].must_qty)
+			CREATE(itemdb_packages[count].must_items, struct item_package_must_entry, itemdb_packages[count].must_qty);
+
+		c = 0;
+		while ((it = config_setting_get_elem(itg, c++))) {
+			int icount = 1, expire = 0, rate = 10000, gid = 0;
+			bool announce = false, named = false, force_serial = false;
+
+			itname = config_setting_name(it);
+
+			if (itname[0] == 'I' && itname[1] == 'D' && strlen(itname) < 8) {
+				if (!(data = itemdb_exists(atoi(itname + 2))))
+					ShowWarning("itemdb_read_packages: unknown item ID '%d' in package '%s'!\n", atoi(itname + 2), config_setting_name(itg));
+			}
+			else if (!(data = itemdb_searchname(itname)))
+				ShowWarning("itemdb_read_packages: unknown item '%s' in package '%s'!\n", itname, config_setting_name(itg));
+
+			if ((t = config_setting_get_member(it, "Count")))
+				icount = config_setting_get_int(t);
+
+			if ((t = config_setting_get_member(it, "Expire")))
+				expire = config_setting_get_int(t);
+
+			if ((t = config_setting_get_member(it, "Rate"))) {
+				if ((rate = (unsigned short)config_setting_get_int(t)) > 10000) {
+					ShowWarning("itemdb_read_packages: invalid rate (%d) for item '%s' in package '%s'!\n", rate, itname, config_setting_name(itg));
+					rate = 10000;
+				}
+			}
+
+			if ((t = config_setting_get_member(it, "Announce")) && config_setting_get_bool(t))
+				announce = true;
+
+			if ((t = config_setting_get_member(it, "Named")) && config_setting_get_bool(t))
+				named = true;
+
+			if ((t = config_setting_get_member(it, "ForceSerial")) && config_setting_get_bool(t))
+				force_serial = true;
+
+			if (!(t = config_setting_get_member(it, "Random"))) {
+				ShowWarning("itemdb_read_packages: missing 'Random' field for item '%s' in package '%s', defaulting to must!\n", itname, config_setting_name(itg));
+				gid = 0;
+			}
+			else
+				gid = config_setting_get_int(t);
+
+			if (gid == 0) {
+				itemdb_packages[count].must_items[m].id = data ? data->nameid : 0;
+				itemdb_packages[count].must_items[m].qty = icount;
+				itemdb_packages[count].must_items[m].hours = expire;
+				itemdb_packages[count].must_items[m].announce = announce == true ? 1 : 0;
+				itemdb_packages[count].must_items[m].named = named == true ? 1 : 0;
+				itemdb_packages[count].must_items[m].force_serial = force_serial == true ? 1 : 0;
+				m++;
+			}
+			else {
+				int gidx = gid - 1;
+
+				r = itemdb_packages[count].random_groups[gidx].random_qty;
+
+				if (prev[gidx])
+					prev[gidx]->next = &itemdb_packages[count].random_groups[gidx].random_list[r];
+
+				itemdb_packages[count].random_groups[gidx].random_list[r].id = data ? data->nameid : 0;
+				itemdb_packages[count].random_groups[gidx].random_list[r].qty = icount;
+				if ((itemdb_packages[count].random_groups[gidx].random_list[r].rate = rate) == 10000) {
+					ShowWarning("itemdb_read_packages: item '%s' in '%s' has 100%% drop rate!! set this item as 'Random: 0' or other items won't drop!!!\n", itname, config_setting_name(itg));
+				}
+				itemdb_packages[count].random_groups[gidx].random_list[r].hours = expire;
+				itemdb_packages[count].random_groups[gidx].random_list[r].announce = announce == true ? 1 : 0;
+				itemdb_packages[count].random_groups[gidx].random_list[r].named = named == true ? 1 : 0;
+				itemdb_packages[count].random_groups[gidx].random_list[r].force_serial = force_serial == true ? 1 : 0;
+				itemdb_packages[count].random_groups[gidx].random_qty += 1;
+
+				prev[gidx] = &itemdb_packages[count].random_groups[gidx].random_list[r];
+			}
+		}
+
+		for (r = 0; r < highest_gcount; r++) {
+			if (prev[r])
+				prev[r]->next = &itemdb_packages[count].random_groups[r].random_list[0];
+		}
+
+		for (r = 0; r < itemdb_packages[count].random_qty; r++) {
+			if (itemdb_packages[count].random_groups[r].random_qty == 1) {
+				//item packages don't stop looping until something comes out of them, so if you have only one item in it the drop is guaranteed.
+				ShowWarning("itemdb_read_packages: in '%s' 'Random: %d' group has only 1 random option, drop rate will be 100%%!\n",
+					itemdb_name(itemdb_packages[count].id), r + 1);
+				itemdb_packages[count].random_groups[r].random_list[0].rate = 10000;
+			}
+		}
+		count++;	
+	}
+
+	aFree(must);
+	aFree(random);
+	for (i = 0; i < config_setting_length(item_packages_conf.root); i++) {
+		aFree(rgroups[i]);
+	}
+	aFree(rgroups);
+	aFree(rgroup);
+	aFree(prev);
+
+	config_destroy(&item_packages_conf);
+	ShowStatus("Done reading '"CL_WHITE"%d"CL_RESET"' entries in '"CL_WHITE"%s"CL_RESET"'.\n", count, config_filename);	
+}
+
 /*====================================
  * read all item-related databases
  *------------------------------------*/
@@ -1007,6 +1325,8 @@ static void itemdb_read(void)
 	sv_readdb(db_path, "item_trade.txt",   ',', 3, 3, -1,             &itemdb_read_itemtrade);
 	sv_readdb(db_path, "item_delay.txt",   ',', 2, 2, MAX_ITEMDELAYS, &itemdb_read_itemdelay);
 	sv_readdb(db_path, "item_buyingstore.txt", ',', 1, 1, -1,         &itemdb_read_buyingstore);
+
+	itemdb_read_packages();
 }
 
 /*==========================================
@@ -1033,7 +1353,7 @@ static void destroy_item_data(struct item_data* self, int free_self)
 	if( free_self )
 		aFree(self);
 }
-
+		
 static int itemdb_final_sub(DBKey key,void *data,va_list ap)
 {
 	struct item_data *id = (struct item_data *)data;
@@ -1077,6 +1397,22 @@ void do_final_itemdb(void)
 {
 	int i;
 
+	if (itemdb_packages) {
+		for (i = 0; i < itemdb_package_count; i++) {
+			if (itemdb_packages[i].random_groups) {
+				int j;
+				for (j = 0; j < itemdb_packages[i].random_qty; j++)
+					aFree(itemdb_packages[i].random_groups[j].random_list);
+				aFree(itemdb_packages[i].random_groups);
+			}
+			if (itemdb_packages[i].must_items)
+				aFree(itemdb_packages[i].must_items);
+		}
+		aFree(itemdb_packages);
+		itemdb_packages = NULL;
+	}
+	itemdb_package_count = 0;
+
 	for( i = 0; i < ARRAYLENGTH(itemdb_array); ++i )
 		if( itemdb_array[i] )
 			destroy_item_data(itemdb_array[i], 1);
@@ -1087,6 +1423,9 @@ void do_final_itemdb(void)
 
 int do_init_itemdb(void)
 {
+	itemdb_packages = NULL;
+	itemdb_package_count = 0;
+
 	memset(itemdb_array, 0, sizeof(itemdb_array));
 	itemdb_other = idb_alloc(DB_OPT_BASE); 
 	create_dummy_data(); //Dummy data item.
