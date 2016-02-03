@@ -1,22 +1,22 @@
 /* ----------------------------------------------------------------------------
    libconfig - A library for processing structured configuration files
-   Copyright (C) 2013-2015  Hercules Dev Team
-   Copyright (C) 2005-2010  Mark A Lindner
+   Copyright (C) 2005-2014  Mark A Lindner
 
    This file is part of libconfig.
 
-   This library is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation, either version 3 of the License, or
-   (at your option) any later version.
+   This library is free software; you can redistribute it and/or
+   modify it under the terms of the GNU Lesser General Public License
+   as published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
 
-   This library is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
 
-   You should have received a copy of the GNU General Public License
-   along with this library.  If not, see <http://www.gnu.org/licenses/>.
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, see
+   <http://www.gnu.org/licenses/>.
    ----------------------------------------------------------------------------
 */
 
@@ -24,41 +24,46 @@
 #include "ac_config.h"
 #endif
 
-#include "libconfig.h"
-#include "grammar.h"
-#include "scanner.h"
-#include "scanctx.h"
-#include "parsectx.h"
-#include "wincompat.h"
-
 #include <locale.h>
 
 #ifdef HAVE_XLOCALE_H
 #include <xlocale.h>
 #endif
 
+#include <ctype.h>
+#include <float.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
-#define PATH_TOKENS ":/"
+#include "libconfig.h"
+#include "parsectx.h"
+#include "scanctx.h"
+#include "wincompat.h"
+#include "grammar.h"
+#include "scanner.h"
+
+#define PATH_TOKENS ":./"
 #define CHUNK_SIZE 16
-#define FLOAT_PRECISION 10
+#define FLOAT_PRECISION DBL_DIG
 
-#define _new(T) (T *)calloc(sizeof(T), 1) /* zeroed */
+#define _new(T) (T *)calloc(1, sizeof(T)) /* zeroed */
 #define _delete(P) free((void *)(P))
 
 /* ------------------------------------------------------------------------- */
 
 #ifndef LIBCONFIG_STATIC
-#if (defined(WIN32) || defined(_WIN32) || defined(__WIN32__))
+#if (defined(WIN32) || defined(_WIN32) || defined(__WIN32__)    \
+     || defined(WIN64) || defined(_WIN64))
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
   return(TRUE);
 }
 
-#endif /* WIN32 */
+#endif /* WIN32 || WIN64 */
 #endif /* LIBCONFIG_STATIC */
 
 /* ------------------------------------------------------------------------- */
@@ -66,14 +71,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 static const char *__io_error = "file I/O error";
 
 static void __config_list_destroy(config_list_t *list);
-static void __config_write_setting(const config_setting_t *setting,
-                                   FILE *stream, int depth,
-                                   unsigned short tab_width);
-
-extern int libconfig_yyparse(void *scanner, struct parse_context *ctx,
-                             struct scan_context *scan_ctx);
-extern int libconfig_yylex_init_extra(struct scan_context *scan_ctx,
-                                      yyscan_t *scanner);
+static void __config_write_setting(const config_t *config,
+                                   const config_setting_t *setting,
+                                   FILE *stream, int depth);
 
 /* ------------------------------------------------------------------------- */
 
@@ -97,12 +97,15 @@ static void __config_locale_override(void)
 
 #else
 
-/* locale overriding is pretty pointless (Hercules doesn't make use of the area that uses locale functionality),
- * but I'm actually removing it because it floods the buildbot with warnings  */
-//#warning "No way to modify calling thread's locale!"
+#warning "No way to modify calling thread's locale!"
 
 #endif
 }
+
+/* ------------------------------------------------------------------------- */
+
+#define __config_has_option(C, O)               \
+  (((C)->options & (O)) != 0)
 
 /* ------------------------------------------------------------------------- */
 
@@ -120,9 +123,7 @@ static void __config_locale_restore(void)
 
 #else
 
-/* locale overriding is pretty pointless (Hercules doesn't make use of the area that uses locale functionality),
- * but I'm actually removing it because it floods the buildbot with warnings  */
-//#warning "No way to modify calling thread's locale!"
+#warning "No way to modify calling thread's locale!"
 
 #endif
 }
@@ -169,9 +170,9 @@ static void __config_indent(FILE *stream, int depth, unsigned short w)
 
 /* ------------------------------------------------------------------------- */
 
-static void __config_write_value(const config_value_t *value, int type,
-                                 int format, int depth,
-                                 unsigned short tab_width, FILE *stream)
+static void __config_write_value(const config_t *config,
+                                 const config_value_t *value, int type,
+                                 int format, int depth, FILE *stream)
 {
   char fbuf[64];
 
@@ -308,9 +309,9 @@ static void __config_write_value(const config_value_t *value, int type,
 
         for(s = list->elements; len--; s++)
         {
-          __config_write_value(&((*s)->value), (*s)->type,
-                               config_setting_get_format(*s),
-                               depth + 1, tab_width, stream);
+          __config_write_value(config, &((*s)->value), (*s)->type,
+                               config_setting_get_format(*s), depth + 1,
+                               stream);
 
           if(len)
             fputc(',', stream);
@@ -337,9 +338,9 @@ static void __config_write_value(const config_value_t *value, int type,
 
         for(s = list->elements; len--; s++)
         {
-          __config_write_value(&((*s)->value), (*s)->type,
-                               config_setting_get_format(*s),
-                               depth + 1, tab_width, stream);
+          __config_write_value(config, &((*s)->value), (*s)->type,
+                               config_setting_get_format(*s), depth + 1,
+                               stream);
 
           if(len)
             fputc(',', stream);
@@ -359,14 +360,14 @@ static void __config_write_value(const config_value_t *value, int type,
 
       if(depth > 0)
       {
-#ifdef K_AND_R_STYLE /* Horrendous, but many people like it. */
-        fputc(' ', stream);
-#else
-        fputc('\n', stream);
+        if((config->options & CONFIG_OPTION_OPEN_BRACE_ON_SEPARATE_LINE) != 0)
+        {
+          fputc('\n', stream);
 
-        if(depth > 1)
-          __config_indent(stream, depth, tab_width);
-#endif
+          if(depth > 1)
+            __config_indent(stream, depth, config->tab_width);
+        }
+
         fprintf(stream, "{\n");
       }
 
@@ -376,11 +377,11 @@ static void __config_write_value(const config_value_t *value, int type,
         config_setting_t **s;
 
         for(s = list->elements; len--; s++)
-          __config_write_setting(*s, stream, depth + 1, tab_width);
+          __config_write_setting(config, *s, stream, depth + 1);
       }
 
       if(depth > 1)
-        __config_indent(stream, depth, tab_width);
+        __config_indent(stream, depth, config->tab_width);
 
       if(depth > 0)
         fputc('}', stream);
@@ -538,13 +539,12 @@ static int __config_validate_name(const char *name)
   if(*p == '\0')
     return(CONFIG_FALSE);
 
-  if(! isalpha((int)*p) && !isdigit((int)*p) && (*p != '*')) {
+  if(! isalpha((int)*p) && (*p != '*'))
     return(CONFIG_FALSE);
-  }
 
   for(++p; *p; ++p)
   {
-    if(! (isalpha((int)*p) || isdigit((int)*p) || strchr("*_-'.", (int)*p)))
+    if(! (isalpha((int)*p) || isdigit((int)*p) || strchr("*_-", (int)*p)))
       return(CONFIG_FALSE);
   }
 
@@ -559,14 +559,13 @@ static int __config_read(config_t *config, FILE *stream, const char *filename,
   yyscan_t scanner;
   struct scan_context scan_ctx;
   struct parse_context parse_ctx;
-  /*YY_BUFFER_STATE buffer = NULL;*/
   int r;
 
   /* Reinitialize the config */
   void (*destructor)(void *) = config->destructor;
   const char *include_dir = config->include_dir;
   unsigned short tab_width = config->tab_width;
-  unsigned short flags = config->flags;
+  int options = config->options;
 
   config->include_dir = NULL;
   config_destroy(config);
@@ -575,7 +574,7 @@ static int __config_read(config_t *config, FILE *stream, const char *filename,
   config->destructor = destructor;
   config->include_dir = include_dir;
   config->tab_width = tab_width;
-  config->flags = flags;
+  config->options = options;
 
   parsectx_init(&parse_ctx);
   parse_ctx.config = config;
@@ -585,13 +584,14 @@ static int __config_read(config_t *config, FILE *stream, const char *filename,
   __config_locale_override();
 
   scanctx_init(&scan_ctx, filename);
+  config->root->file = scanctx_current_filename(&scan_ctx);
   scan_ctx.config = config;
   libconfig_yylex_init_extra(&scan_ctx, &scanner);
 
   if(stream)
     libconfig_yyrestart(stream, scanner);
   else /* read from string */
-    /*buffer = */libconfig_yy_scan_string(str, scanner);
+    (void)libconfig_yy_scan_string(str, scanner);
 
   libconfig_yyset_lineno(1, scanner);
   r = libconfig_yyparse(scanner, &parse_ctx, &scan_ctx);
@@ -633,26 +633,36 @@ int config_read_string(config_t *config, const char *str)
 
 /* ------------------------------------------------------------------------- */
 
-static void __config_write_setting(const config_setting_t *setting,
-                                   FILE *stream, int depth,
-                                   unsigned short tab_width)
+static void __config_write_setting(const config_t *config,
+                                   const config_setting_t *setting,
+                                   FILE *stream, int depth)
 {
+  char group_assign_char = __config_has_option(
+    config, CONFIG_OPTION_COLON_ASSIGNMENT_FOR_GROUPS) ? ':' : '=';
+
+  char nongroup_assign_char = __config_has_option(
+    config, CONFIG_OPTION_COLON_ASSIGNMENT_FOR_NON_GROUPS) ? ':' : '=';
+
   if(depth > 1)
-    __config_indent(stream, depth, tab_width);
+    __config_indent(stream, depth, config->tab_width);
+
 
   if(setting->name)
   {
     fputs(setting->name, stream);
-    fprintf(stream, " %c ", (setting->type == CONFIG_TYPE_GROUP ? ':' : '='));
+    fprintf(stream, " %c ", ((setting->type == CONFIG_TYPE_GROUP)
+                             ? group_assign_char
+                             : nongroup_assign_char));
   }
 
-  __config_write_value(&(setting->value), setting->type,
-                       config_setting_get_format(setting),
-                       depth, tab_width, stream);
+  __config_write_value(config, &(setting->value), setting->type,
+                       config_setting_get_format(setting), depth, stream);
 
   if(depth > 0)
   {
-    fputc(';', stream);
+    if(__config_has_option(config, CONFIG_OPTION_SEMICOLON_SEPARATORS))
+      fputc(';', stream);
+
     fputc('\n', stream);
   }
 }
@@ -663,7 +673,7 @@ void config_write(const config_t *config, FILE *stream)
 {
   __config_locale_override();
 
-  __config_write_setting(config->root, stream, 0, config->tab_width);
+  __config_write_setting(config, config->root, stream, 0);
 
   __config_locale_restore();
 }
@@ -672,10 +682,28 @@ void config_write(const config_t *config, FILE *stream)
 
 int config_read_file(config_t *config, const char *filename)
 {
-  int ret;
+  int ret, ok = 0;
+
   FILE *stream = fopen(filename, "rt");
-  if(! stream)
+  if(stream != NULL)
   {
+    // On some operating systems, fopen() succeeds on a directory.
+    int fd = fileno(stream);
+    struct stat statbuf;
+
+    if(fstat(fd, &statbuf) == 0)
+    {
+      // Only proceed if this is not a directory.
+      if(!S_ISDIR(statbuf.st_mode))
+        ok = 1;
+    }
+  }
+
+  if(!ok)
+  {
+    if(stream != NULL)
+      fclose(stream);
+
     config->error_text = __io_error;
     config->error_type = CONFIG_ERR_FILE_IO;
     return(CONFIG_FALSE);
@@ -691,16 +719,16 @@ int config_read_file(config_t *config, const char *filename)
 
 int config_write_file(config_t *config, const char *filename)
 {
-  FILE *f = fopen(filename, "wt");
-  if(! f)
+  FILE *stream = fopen(filename, "wt");
+  if(stream == NULL)
   {
     config->error_text = __io_error;
     config->error_type = CONFIG_ERR_FILE_IO;
     return(CONFIG_FALSE);
   }
 
-  config_write(config, f);
-  fclose(f);
+  config_write(config, stream);
+  fclose(stream);
   config->error_type = CONFIG_ERR_NONE;
   return(CONFIG_TRUE);
 }
@@ -732,6 +760,9 @@ void config_init(config_t *config)
   config->root = _new(config_setting_t);
   config->root->type = CONFIG_TYPE_GROUP;
   config->root->config = config;
+  config->options = (CONFIG_OPTION_SEMICOLON_SEPARATORS
+                     | CONFIG_OPTION_COLON_ASSIGNMENT_FOR_GROUPS
+                     | CONFIG_OPTION_OPEN_BRACE_ON_SEPARATE_LINE);
   config->tab_width = 2;
 }
 
@@ -740,16 +771,30 @@ void config_init(config_t *config)
 void config_set_auto_convert(config_t *config, int flag)
 {
   if(flag)
-    config->flags |= CONFIG_OPTION_AUTOCONVERT;
+    config->options |= CONFIG_OPTION_AUTOCONVERT;
   else
-    config->flags &= ~CONFIG_OPTION_AUTOCONVERT;
+    config->options &= ~CONFIG_OPTION_AUTOCONVERT;
 }
 
 /* ------------------------------------------------------------------------- */
 
 int config_get_auto_convert(const config_t *config)
 {
-  return((config->flags & CONFIG_OPTION_AUTOCONVERT) != 0);
+  return(__config_has_option(config, CONFIG_OPTION_AUTOCONVERT));
+}
+
+/* ------------------------------------------------------------------------- */
+
+void config_set_options(config_t *config, int options)
+{
+  config->options = options;
+}
+
+/* ------------------------------------------------------------------------- */
+
+int config_get_options(const config_t *config)
+{
+  return(config->options);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -803,7 +848,7 @@ static int __config_setting_get_int(const config_setting_t *setting,
       return(CONFIG_TRUE);
 
     case CONFIG_TYPE_FLOAT:
-      if((setting->config->flags & CONFIG_OPTION_AUTOCONVERT) != 0)
+      if(__config_has_option(setting->config, CONFIG_OPTION_AUTOCONVERT))
       {
         *value = (int)(setting->value.fval);
         return(CONFIG_TRUE);
@@ -841,7 +886,7 @@ static int __config_setting_get_int64(const config_setting_t *setting,
       return(CONFIG_TRUE);
 
     case CONFIG_TYPE_FLOAT:
-      if((setting->config->flags & CONFIG_OPTION_AUTOCONVERT) != 0)
+      if(__config_has_option(setting->config, CONFIG_OPTION_AUTOCONVERT))
       {
         *value = (long long)(setting->value.fval);
         return(CONFIG_TRUE);
@@ -1052,7 +1097,7 @@ int config_setting_set_float(config_setting_t *setting, double value)
       return(CONFIG_TRUE);
 
     case CONFIG_TYPE_INT:
-      if((setting->config->flags & CONFIG_OPTION_AUTOCONVERT) != 0)
+      if(__config_has_option(setting->config, CONFIG_OPTION_AUTOCONVERT))
       {
         setting->value.ival = (int)value;
         return(CONFIG_TRUE);
@@ -1061,7 +1106,7 @@ int config_setting_set_float(config_setting_t *setting, double value)
         return(CONFIG_FALSE);
 
     case CONFIG_TYPE_INT64:
-      if((setting->config->flags & CONFIG_OPTION_AUTOCONVERT) != 0)
+      if(__config_has_option(setting->config, CONFIG_OPTION_AUTOCONVERT))
       {
         setting->value.llval = (long long)value;
         return(CONFIG_TRUE);
@@ -1141,8 +1186,8 @@ short config_setting_get_format(const config_setting_t *setting)
 
 /* ------------------------------------------------------------------------- */
 
-config_setting_t *config_lookup_from(config_setting_t *setting,
-                                     const char *path)
+config_setting_t *config_setting_lookup(config_setting_t *setting,
+                                        const char *path)
 {
   const char *p = path;
   config_setting_t *found;
@@ -1176,7 +1221,7 @@ config_setting_t *config_lookup_from(config_setting_t *setting,
 
 config_setting_t *config_lookup(const config_t *config, const char *path)
 {
-  return(config_lookup_from(config->root, path));
+  return(config_setting_lookup(config->root, path));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1541,17 +1586,8 @@ config_setting_t *config_setting_add(config_setting_t *parent,
       return(NULL);
   }
 
-#if 0
-  /* https://github.com/HerculesWS/Hercules/pull/136#discussion_r6363319
-   * With this code, accidental duplicate keys would cause the file parsing to fail
-   * (would cause several issues during runtime on file reloads), while libconfig's code
-   * has no problems with duplicate members so it was ducked out -- TODO: looking now though
-   * I'd think it could be useful to have it display a warning or error message when finding
-   * duplicate keys instead of silently moving on. [Ind]
-   */
   if(config_setting_get_member(parent, name) != NULL)
     return(NULL); /* already exists */
-#endif
 
   return(config_setting_create(parent, name, type));
 }
@@ -1627,4 +1663,4 @@ int config_setting_index(const config_setting_t *setting)
 }
 
 /* ------------------------------------------------------------------------- */
-/* eof */
+
