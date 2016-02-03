@@ -3,12 +3,8 @@
 #define libconfig_yyIN_HEADER 1
 
 #line 6 "scanner.h"
-#line 36 "scanner.l"
-#include "scanctx.h"
 
-
-
-#line 12 "scanner.h"
+#line 8 "scanner.h"
 
 #define  YY_INT_ALIGNED short int
 
@@ -226,8 +222,15 @@ void libconfig_yyfree (void * ,yyscan_t yyscanner );
 #define COMMENT 1
 #define STRING 2
 #define INCLUDE 3
-#define SCRIPTBLOCK 4
 
+#endif
+
+#ifndef YY_NO_UNISTD_H
+/* Special case for "unistd.h", since it is non-ANSI. We include it way
+ * down here because we want the user's section 1 to have been scanned first.
+ * The user has a chance to override it with an option.
+ */
+#include <unistd.h>
 #endif
 
 #define YY_EXTRA_TYPE struct scan_context *
@@ -334,8 +337,8 @@ extern int libconfig_yylex \
 #undef YY_DECL
 #endif
 
-#line 209 "scanner.l"
+#line 193 "scanner.l"
 
-#line 340 "scanner.h"
+#line 343 "scanner.h"
 #undef libconfig_yyIN_HEADER
 #endif /* libconfig_yyHEADER_H */
